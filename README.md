@@ -1,3 +1,20 @@
+# Submission notes
+
+Approach: for each frame where the ball is tracked, the team of the nearest
+player gets possession; frames without a visible ball are labelled D. The
+labels are then smoothed with a centred majority vote (+/-50 frames).
+
+Reproduce (Python 3.12, numpy and pandas only):
+
+    pip install -r requirements.txt
+    python starter/baseline.py
+    python evaluation/validate_submission.py evaluation/results/baseline_smooth50.csv
+
+The submitted file is evaluation/results/baseline_smooth50.csv.
+Match data is not included (see data/README.md).
+
+---
+
 # More than a Hack 2027 — Phase 1: Ball Possession
 
 **Organised by [Metrica Sports](https://metrica-sports.com), [FC Barcelona](https://www.fcbarcelona.com)
