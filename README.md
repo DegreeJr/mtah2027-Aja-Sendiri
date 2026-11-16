@@ -1,16 +1,18 @@
-# Submission notes
+# Submission notes (team Aja Sendiri)
 
-Approach: for each frame where the ball is tracked, the team of the nearest
-player gets possession; frames without a visible ball are labelled D. The
-labels are then smoothed with a centred majority vote (+/-50 frames).
+Method: starter/possession_v2.py. Possession is a state that only changes on evidence: a team
+takes the ball when its player stays clearly closest to it (within 2 m) for 0.4 s; a missing ball
+keeps the current team; dead ball comes only from explicit signals (ball out of the pitch, Smart
+Tagging set pieces and goals, second half before kickoff). Frames outside the graded halves are X.
+All parameters are fixed in the script and explained in the technical document.
 
 Reproduce (Python 3.12, numpy and pandas only):
 
     pip install -r requirements.txt
-    python starter/baseline.py
-    python evaluation/validate_submission.py evaluation/results/baseline_smooth50.csv
+    python starter/possession_v2.py
+    python evaluation/validate_submission.py evaluation/results/aja_sendiri_v2.csv
 
-The submitted file is evaluation/results/baseline_smooth50.csv.
+The submitted file is evaluation/results/aja_sendiri_v2.csv.
 Match data is not included (see data/README.md).
 
 ---
