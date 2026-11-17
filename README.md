@@ -1,19 +1,28 @@
 # Submission notes (team Aja Sendiri)
 
-Method: starter/possession_v2.py. Possession is a state that only changes on evidence: a team
-takes the ball when its player stays clearly closest to it (within 2 m) for 0.4 s; a missing ball
-keeps the current team; dead ball comes only from explicit signals (ball out of the pitch, Smart
-Tagging set pieces and goals, second half before kickoff). Frames outside the graded halves are X.
-All parameters are fixed in the script and explained in the technical document.
+Submitted method: v3 (starter/possession_v3.py). A LightGBM model gives H/A/D probabilities per
+frame from tracking features (mtah_v3/features.py); a Viterbi decoder (mtah_v3/decode.py) turns them
+into possessions. The model and decoder costs (models/v3/) were trained and chosen only on the
+IDSSE open dataset (Bassek et al. 2025, CC BY 4.0), degraded to resemble automatic tracking, by
+kaggle/train_v3.py. Nothing was fitted or chosen on the competition match. Frames outside the
+graded halves are X.
 
-Reproduce (Python 3.12, numpy and pandas only):
+Reproduce the submission (Python 3.12, CPU):
 
     pip install -r requirements.txt
-    python starter/possession_v2.py
-    python evaluation/validate_submission.py evaluation/results/aja_sendiri_v2.csv
+    python starter/possession_v3.py
+    python evaluation/validate_submission.py evaluation/results/aja_sendiri_v3.csv
 
-The submitted file is evaluation/results/aja_sendiri_v2.csv.
-Match data is not included (see data/README.md).
+The submitted file is evaluation/results/aja_sendiri_v3.csv. Match data is not included (see
+data/README.md).
+
+Retrain the model (optional, external data only): unpack the IDSSE files from figshare
+(doi 10.6084/m9.figshare.28196177) into one folder, then
+
+    pip install lightgbm==4.6.0
+    python kaggle/train_v3.py --idsse-dir <folder> --out models/v3
+
+starter/possession_v2.py is our earlier rule-based method, kept for reference.
 
 ---
 

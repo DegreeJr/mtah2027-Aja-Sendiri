@@ -90,6 +90,10 @@ def main():
         states = viterbi(proba, config["team_cost"], config["dead_cost"])
         labels[lo:hi] = LABELS[states]
         print("  half {} decoded".format(half))
+    graded = labels != "X"
+    if graded.any() and np.mean(labels[graded] == "D") > 0.6:
+        print("WARNING: the dead-ball share looks implausible for a football match; "
+              "do not submit this file")
     path = write_submission(args.out, labels)
     print("wrote {}".format(path))
 

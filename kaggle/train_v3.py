@@ -37,16 +37,16 @@ import possession_metrics as pm  # noqa: E402
 
 IDSSE_MATCHES = ["J03WMX", "J03WN1", "J03WOH", "J03WOY", "J03WPY", "J03WQQ", "J03WR9"]
 SEED = 20271117
-TEAM_COSTS = [5, 10, 20, 40, 80, 160, 320]
-DEAD_COSTS = [5, 10, 20, 40, 80, 160, 320]
+TEAM_COSTS = [6, 10, 13, 16, 20, 25, 32]
+DEAD_COSTS = [40, 50, 60, 70, 80, 120]
 TRAIN_STRIDE = 2  # neighbouring frames are near-duplicates; every 2nd frame halves training time
 TARGET_BALL_MISSING = 0.43
 LGB_PARAMS = {
-    "objective": "multiclass", "num_class": 3, "learning_rate": 0.05, "num_leaves": 63,
-    "min_data_in_leaf": 200, "feature_fraction": 0.8, "lambda_l2": 1.0,
-    "deterministic": True, "force_row_wise": True, "num_threads": 4, "seed": 0, "verbose": -1,
+    "objective": "multiclass", "num_class": 3, "learning_rate": 0.05, "num_leaves": 127,
+    "min_data_in_leaf": 400, "feature_fraction": 0.8, "lambda_l2": 1.0,
+    "deterministic": True, "force_row_wise": True, "num_threads": 2, "seed": 0, "verbose": -1,
 }
-NUM_ROUNDS = 300
+NUM_ROUNDS = 600
 
 
 # ---------------------------------------------------------------------------------------------
@@ -109,6 +109,121 @@ def load_idsse(match_id):
 
 
 # ---------------------------------------------------------------------------------------------
+# Loading from local files (the IDSSE zip from figshare, unpacked into one folder)
+# ---------------------------------------------------------------------------------------------
+
+import glob
+import re
+
+_ATTR = re.compile(r'(\w+)="([^"]*)"')
+
+
+def _attrs(line):
+    return dict(_ATTR.findall(line))
+
+
+def load_idsse_local(match_id, folder):
+    """Same output as load_idsse, read with a streaming parser from the DFL XML files.
+
+    Positions file: one <FrameSet> per person (TeamId = club id, "referee" or "BALL") and game
+    section, then one <Frame N= X= Y= .../> per frame, in metres with the origin at the centre
+    spot. Ball frames also carry BallStatus (1 = in play) and BallPossession (1 or 2).
+    """
+    info = glob.glob(os.path.join(folder, "DFL_02_01_*%s.xml" % match_id))
+    pos = sorted(glob.glob(os.path.join(folder, "DFL_04_03_*%s.xml" % match_id)) +
+                 glob.glob(os.path.join(folder, "DFL_04_03_*%s.xml.gz" % match_id)))
+    if not info or not pos:
+        raise SystemExit("IDSSE files for %s not found in %s" % (match_id, folder))
+    roles = {}
+    with open(info[0], encoding="utf-8") as fh:
+        for m in re.finditer(r"<Team [^>]*>", fh.read()):
+            a = _attrs(m.group(0))
+            roles[a.get("TeamId")] = a.get("Role")
+    home_id = next(t for t, r in roles.items() if r == "home")
+    away_id = next(t for t, r in roles.items() if r != "home")
+
+    L, W = 105.0, 68.0
+    sets = {}          # (section, team, person) -> list of (N, X, Y, Z, poss, status)
+    cur = None
+    import gzip
+    opener = gzip.open if pos[0].endswith(".gz") else open
+    with opener(pos[0], "rt", encoding="utf-8") as fh:
+        for line in fh:
+            if "<Frame " in line:
+                if cur is None:
+                    continue
+                a = _attrs(line)
+                cur.append((int(a["N"]), float(a["X"]), float(a["Y"]), float(a.get("Z", 0.0)),
+                            int(a.get("BallPossession", 0)), int(a.get("BallStatus", -1))))
+            elif "<FrameSet" in line:
+                a = _attrs(line)
+                cur = sets.setdefault((a.get("GameSection"), a.get("TeamId"), a.get("PersonId")), [])
+            elif "<PitchSize" in line:
+                a = _attrs(line)
+                L, W = float(a.get("X", L)), float(a.get("Y", W))
+
+    blocks = []
+    sections = []
+    for (sec, team, _), _rows in sets.items():
+        if team == "BALL" and sec not in sections:
+            sections.append(sec)
+    for sec in sections:
+        ball_rows = np.array([r for (s, t, _), rows in sets.items()
+                              if s == sec and t == "BALL" for r in rows])
+        n0, n1 = int(ball_rows[:, 0].min()), int(ball_rows[:, 0].max())
+        n = n1 - n0 + 1
+        ball = np.full((n, 2), np.nan)
+        ball_z = np.zeros(n)
+        poss = np.zeros(n, dtype=int)
+        status = np.full(n, -1, dtype=int)
+        idx = ball_rows[:, 0].astype(int) - n0
+        ball[idx, 0] = ball_rows[:, 1] + L / 2
+        ball[idx, 1] = ball_rows[:, 2] + W / 2
+        ball_z[idx] = ball_rows[:, 3]
+        poss[idx] = ball_rows[:, 4].astype(int)
+        status[idx] = ball_rows[:, 5].astype(int)
+
+        def team_array(team_id):
+            people = [rows for (s, t, _), rows in sets.items() if s == sec and t == team_id]
+            arr = np.full((n, max(1, len(people)), 2), np.nan)
+            for j, rows in enumerate(people):
+                r = np.array(rows)
+                k = r[:, 0].astype(int) - n0
+                ok = (k >= 0) & (k < n)
+                arr[k[ok], j, 0] = r[ok, 1] + L / 2
+                arr[k[ok], j, 1] = r[ok, 2] + W / 2
+            return arr
+        home, away = team_array(home_id), team_array(away_id)
+
+        # Which BallPossession value is the home side? Check it on the data instead of assuming:
+        # with the ball in play and possession value v, that team's nearest player should usually be
+        # closer to the ball than the other team's.
+        with np.errstate(invalid="ignore"), __import__("warnings").catch_warnings():
+            __import__("warnings").simplefilter("ignore", RuntimeWarning)
+            dh = np.nanmin(np.linalg.norm(home - ball[:, None], axis=-1), axis=1)
+            da = np.nanmin(np.linalg.norm(away - ball[:, None], axis=-1), axis=1)
+        alive = status == 1
+        fin = alive & np.isfinite(dh) & np.isfinite(da)
+        frac = {v: float(np.mean(dh[fin & (poss == v)] < da[fin & (poss == v)]))
+                if (fin & (poss == v)).any() else 0.5 for v in (1, 2)}
+        # DFL convention is 1 = home; only overrule it when the data clearly disagrees.
+        home_is_1 = not (frac[2] - frac[1] > 0.10)
+        home_val, away_val = (1, 2) if home_is_1 else (2, 1)
+
+        y = np.full(n, -1, dtype=np.int8)
+        y[status == 0] = 2
+        y[alive & (poss == home_val)] = 0
+        y[alive & (poss == away_val)] = 1
+        print("    %s %s: %d frames, %d+%d players, home nearer when poss=1: %.2f, poss=2: %.2f"
+              " -> home=%d, labels H/A/D/none %s"
+              % (match_id, sec, n, home.shape[1], away.shape[1], frac[1], frac[2], home_val,
+                 [int((y == c).sum()) for c in (0, 1, 2, -1)]))
+        blocks.append({"ball": ball, "ball_z": ball_z, "home": home, "away": away, "y": y,
+                       "pitch": (L, W), "name": "%s_%s" % (match_id, sec)})
+    return blocks
+
+
+# ---------------------------------------------------------------------------------------------
 # Degradation: make clean external tracking look like automatic, uncorrected tracking
 # ---------------------------------------------------------------------------------------------
 
@@ -129,14 +244,32 @@ def _chunks(n, start_prob, mean_len, rng, boost=None):
     return miss
 
 
+def _smooth_noise(rng, shape, std, window=51, passes=3):
+    """Slowly drifting position error: white noise box-filtered `passes` times along time (close to
+    a Gaussian filter with a sigma of about half a second), rescaled to the given std."""
+    x = rng.normal(0, 1, shape)
+    n = shape[0]
+    half = window // 2
+    lo = np.clip(np.arange(n) - half, 0, n)
+    hi = np.clip(np.arange(n) + half + 1, 0, n)
+    k = (hi - lo).reshape((-1,) + (1,) * (len(shape) - 1))
+    for _ in range(passes):
+        c = np.cumsum(np.concatenate([np.zeros((1,) + shape[1:]), x]), axis=0)
+        x = (c[hi] - c[lo]) / k
+    return x / max(float(x.std()), 1e-9) * std
+
+
 def degrade(block, rng):
     ball = block["ball"].copy()
     home = block["home"].copy()
     away = block["away"].copy()
     n = len(ball)
-    home += rng.normal(0, 0.25, home.shape)
-    away += rng.normal(0, 0.25, away.shape)
-    ball += rng.normal(0, 0.40, ball.shape)
+    # Position error that drifts slowly (smoothed over one second) rather than jumping every frame:
+    # per-frame white noise would inflate every speed computed from positions (by several m/s for
+    # the ball) and teach the model a speed scale that real tracking does not have.
+    home += _smooth_noise(rng, home.shape, 0.25)
+    away += _smooth_noise(rng, away.shape, 0.25)
+    ball += _smooth_noise(rng, ball.shape, 0.40)
     for arr in (home, away):
         for j in range(arr.shape[1]):
             arr[_chunks(n, 1 / 400, 40, rng), j] = np.nan
@@ -177,6 +310,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "models", "v3"))
     ap.add_argument("--synthetic", action="store_true", help="test the pipeline without download")
+    ap.add_argument("--cache", default=None, help="folder to cache per-match features")
+    ap.add_argument("--idsse-dir", default=None,
+                    help="folder with the unpacked IDSSE XML files (otherwise downloaded by kloppy)")
     args = ap.parse_args()
     import lightgbm as lgb
     os.makedirs(args.out, exist_ok=True)
@@ -186,7 +322,19 @@ def main():
     matches = []
     names = IDSSE_MATCHES if not args.synthetic else ["S1", "S2", "S3"]
     for mid in names:
-        blocks = load_idsse(mid) if not args.synthetic else synthetic_match(mid, rng)
+        cpath = os.path.join(args.cache, mid + ".npz") if args.cache else None
+        if cpath and os.path.exists(cpath):
+            z = np.load(cpath, allow_pickle=True)
+            out = list(z["blocks"])
+            matches.append(out)
+            print("  %s loaded from cache" % mid)
+            continue
+        if args.synthetic:
+            blocks = synthetic_match(mid, rng)
+        elif args.idsse_dir:
+            blocks = load_idsse_local(mid, args.idsse_dir)
+        else:
+            blocks = load_idsse(mid)
         out = []
         for b in blocks:
             ball, home, away = degrade(b, rng)
@@ -194,6 +342,9 @@ def main():
             out.append({"X": X, "y": b["y"], "name": b["name"],
                         "ball_missing": float(np.isnan(ball[:, 0]).mean())})
         matches.append(out)
+        if cpath:
+            os.makedirs(args.cache, exist_ok=True)
+            np.savez(cpath, blocks=np.array(out, dtype=object))
         print("  %s ready (%.0fs), ball missing after degradation: %s"
               % (mid, time.time() - t0, ", ".join("%.2f" % o["ball_missing"] for o in out)))
 
